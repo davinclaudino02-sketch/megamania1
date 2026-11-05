@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MEGA MANIA — Space Shooter</title>
+<meta name="description" content="Jogo de tiro espacial inspirado no clássico Megamania do Atari, com pixel art e áudio gerado por código.">
+<style>
+  /* =====================================================================
+     ESTILOS GLOBAIS
+  ===================================================================== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100vw;
+    height: 100dvh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  #canvas-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #gameCanvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  /* =====================================================================
+     CONTROLES MOBILE
+  ===================================================================== */
+  #mobile-controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    display: none;
+    pointer-events: none;
+  }
+
+  .btn-touch {
+    position: absolute;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.4);
+    background: rgba(255,255,255,0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.7);
+    font-size: 20px;
+    pointer-events: all;
+    touch-action: none;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .btn-touch:active, .btn-touch.pressed {
+    background: rgba(255,255,255,0.25);
+  }
+
+  #btn-left  { bottom: 16px; left: 16px;  width: 56px; height: 56px; }
+  #btn-right { bottom: 16px; left: 84px;  width: 56px; height: 56px; }
+  #btn-fire  { bottom: 16px; right: 16px; width: 72px; height: 72px; border-color: rgba(255,80,80,0.6); font-size: 14px; color: rgba(255,120,120,0.9); }
+</style>
+</head>
+<body>
+
+<div id="canvas-wrapper">
+  <canvas id="gameCanvas"></canvas>
+  <div id="mobile-controls">
+    <div class="btn-touch" id="btn-left">&#9664;</div>
+    <div class="btn-touch" id="btn-right">&#9654;</div>
+    <div class="btn-touch" id="btn-fire">FIRE</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// =========================================================================
+// SECAO 1 - CONSTANTES E CONFIGURACAO
+// =========================================================================
+const W  = 320;   // largura logica
+const H  = 240;   // altura logica
+
+// Jogador
+const PLAYER_SPEED        = 110;  // px/s
+const PLAYER_BULLET_SPEED = 280;  // px/s
+const PLAYER_FIRE_RATE    = 0.22; // segundos entre tiros
+const PLAYER_LIVES_START  = 3;
+
+// Energia
+const ENERGY_MAX          = 100;
+const ENERGY_DRAIN_RATE   = 4.5; // por segundo
+const ENERGY_RESTORE      = ENERGY_MAX;
+
+// Inimigos
+const ENEMY_COLS          = 8;
+const ENEMY_ROWS          = 3;
+const ENEMY_CELL_W        = 24;
+const ENEMY_CELL_H        = 20;
+const ENEMY_GRID_TOP      = 24;
+const ENEMY_SPEED_X_BASE  = 28;
+const ENEMY_SPEED_Y       = 10;
+const ENEMY_BULLET_SPEED  = 90;
+const ENEMY_FIRE_INTERVAL = 1.6;
+const ENEMY_DIVE_CHANCE   = 0.0012;
+
+// Particulas
+const PARTICLE_COUNT      = 18;
+const PARTICLE_LIFE       = 0.55;
+
+// Pontuacao
+const SCORE_PER_ENEMY     = 100;
+const SCORE_WAVE_BONUS    = 500;
+
+// Fases - tipos visuais (ciclico)
+const WAVE_TYPES = ['ship', 'rocket', 'meteor', 'dragon', 'diamond'];
+
+// Paleta vibrante
+const PAL = {
+  cyan:    '#00ffff',
+  magenta: '#ff00ff',
+  yellow:  '#ffff00',
+  green:   '#00ff66',
+  red:     '#ff3030',
+  orange:  '#ff8800',
+  white:   '#ffffff',
+  ltgray:  '#aaaaaa',
+  dkgray:  '#444444',
+  blue:    '#3399ff',
+  pink:    '#ff66cc',
+  lime:    '#99ff00',
+};
+
+// Paletas por tipo de onda
+const WAVE_PALETTES = {
+  ship:    [PAL.cyan,    PAL.blue,    PAL.white],
+  rocket:  [PAL.red,     PAL.orange,  PAL.yellow],
+  meteor:  [PAL.ltgray,  PAL.dkgray,  PAL.orange],
+  dragon:  [PAL.green,   PAL.lime,    PAL.yellow],
+  diamond: [PAL.magenta, PAL.pink,    PAL.cyan],
+};
+
+// =========================================================================
+// SECAO 2 - SPRITES (Pixel art via matrizes)
+// =========================================================================
+const SPRITES = {};
+
+// Nave do jogador (14x11)
+SPRITES.player = {
+  w: 14, h: 11,
+  pixels: [
+    '......XX......',
+    '.....XXXX.....',
+    '.....XXXX.....',
+    '....XXXXXX....',
+    '...XXXXXXXX...',
+    'XXXXXXXXXXXXXX',
+    'XXXXXXXXXXXXXX',
+    '.XX.XXXXXX.XX.',
+    '....XXXXXX....',
+    '....XX..XX....',
+    '....XX..XX....',
+  ],
+  palette: [PAL.cyan, PAL.blue]
+};
+
+// Projetil do jogador (2x6)
+SPRITES.playerBullet = {
+  w: 2, h: 6,
+  pixels: ['XX','XX','XX','XX','XX','XX'],
+  palette: [PAL.yellow]
+};
+
+// Projetil inimigo (3x5)
+SPRITES.enemyBullet = {
+  w: 3, h: 5,
+  pixels: ['.X.','XXX','.X.','.X.','.X.'],
+  palette: [PAL.red]
+};
+
+// Nave inimiga - ship (14x10)
+SPRITES.ship = {
+  w: 14, h: 10,
+  pixels: [
+    '......XX......',
+    '.....XXXX.....',
+    '...XXXXXXXX...',
+    '..XXXXXXXXXX..',
+    '.XXXXXXXXXXXX.',
+    'XXXXXXXXXXXXXX',
+    '.XXXXXXXXXXXX.',
+    '..XX......XX..',
+    '..XX......XX..',
+    '..XX......XX..',
+  ],
+  palette: [PAL.cyan, PAL.blue, PAL.white]
+};
+
+// Foguete - rocket (10x14)
+SPRITES.rocket = {
+  w: 10, h: 14,
+  pixels: [
+    '....XX....',
+    '...XXXX...',
+    '..XXXXXX..',
+    '..XXXXXX..',
+    '.XXXXXXXX.',
+    '.XXXXXXXX.',
+    'XXXXXXXXXX',
+    'XXXXXXXXXX',
+    '.XXXXXXXX.',
+    '.XXXXXXXX.',
+    '..XX..XX..',
+    '..XX..XX..',
+    '.XXX..XXX.',
+    '.X......X.',
+  ],
+  palette: [PAL.red, PAL.orange, PAL.yellow]
+};
+
+// Meteoro - meteor (12x12)
+SPRITES.meteor = {
+  w: 12, h: 12,
+  pixels: [
+    '...XXXXXX...',
+    '..XXXXXXXX..',
+    '.XXXXXXXXXX.',
+    '.XXXXXXXXXX.',
+    'XXXXXXXXXXXX',
+    'XXXXXXXXXXXX',
+    'XXXXXXXXXXXX',
+    'XXXXXXXXXXXX',
+    '.XXXXXXXXXX.',
+    '.XXXXXXXXXX.',
+    '..XXXXXXXX..',
+    '...XXXXXX...',
+  ],
+  palette: [PAL.ltgray, PAL.dkgray, PAL.orange]
+};
+
+// Dragao - dragon (14x11)
+SPRITES.dragon = {
+  w: 14, h: 11,
+  pixels: [
+    'XX..........XX',
+    'XXX........XXX',
+    'XXXXX....XXXXX',
+    '.XXXXXXXXXX...',
+    '..XXXXXXXXXX..',
+    '...XXXXXXXXX..',
+    '..XXXXXXXXXX..',
+    '.XXXXXXXXXX...',
+    'XXXXX....XXXXX',
+    'XXX........XXX',
+    'XX..........XX',
+  ],
+  palette: [PAL.green, PAL.lime, PAL.yellow]
+};
+
+// Diamante - diamond (12x12)
+SPRITES.diamond = {
+  w: 12, h: 12,
+  pixels: [
+    '.....XX.....',
+    '....XXXX....',
+    '...XXXXXX...',
+    '..XXXXXXXX..',
+    '.XXXXXXXXXX.',
+    'XXXXXXXXXXXX',
+    'XXXXXXXXXXXX',
+    '.XXXXXXXXXX.',
+    '..XXXXXXXX..',
+    '...XXXXXX...',
+    '....XXXX....',
+    '.....XX.....',
+  ],
+  palette: [PAL.magenta, PAL.pink, PAL.cyan]
+};
+
+// Coracao (vida) (9x8)
+SPRITES.heart = {
+  w: 9, h: 8,
+  pixels: [
+    '.XX..XX..',
+    'XXXXXXXX.',
+    'XXXXXXXXX',
+    'XXXXXXXXX',
+    '.XXXXXXX.',
+    '..XXXXX..',
+    '...XXX...',
+    '....X....',
+  ],
+  palette: [PAL.red, PAL.pink]
+};
+
+// Pre-renderizar sprites em offscreen canvases
+function buildSpriteCanvas(sprite, overridePalette) {
+  const pal  = overridePalette || sprite.palette;
+  const oc   = document.createElement('canvas');
+  const rows = sprite.pixels;
+  const sw   = rows[0].length;
+  const sh   = rows.length;
+  oc.width   = sw;
+  oc.height  = sh;
+  const octx = oc.getContext('2d');
+  octx.clearRect(0, 0, sw, sh);
+  for (let r = 0; r < sh; r++) {
+    for (let c = 0; c < sw; c++) {
+      const ch = rows[r][c];
+      if (ch === '.' || ch === ' ') continue;
+      const ci = (r + c) % pal.length;
+      octx.fillStyle = pal[ci];
+      octx.fillRect(c, r, 1, 1);
+    }
+  }
+  return oc;
+}
+
+// Cache de sprites pre-renderizados
+const SPC = {};
+
+function initSpriteCache() {
+  SPC.player       = buildSpriteCanvas(SPRITES.player);
+  SPC.playerBullet = buildSpriteCanvas(SPRITES.playerBullet);
+  SPC.enemyBullet  = buildSpriteCanvas(SPRITES.enemyBullet);
+  for (const type of WAVE_TYPES) {
+    SPC[type] = buildSpriteCanvas(SPRITES[type], WAVE_PALETTES[type]);
+  }
+  SPC.heart = buildSpriteCanvas(SPRITES.heart);
+}
+
+// =========================================================================
+// SECAO 3 - AUDIO (Web Audio API)
+// =========================================================================
+let audioCtx = null;
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch(e) {}
+}
+
+function playShoot() {
+  if (!audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = 'square';
+  const t = audioCtx.currentTime;
+  osc.frequency.setValueAtTime(1200, t);
+  osc.frequency.exponentialRampToValueAtTime(300, t + 0.12);
+  gain.gain.setValueAtTime(0.18, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  osc.start(t);
+  osc.stop(t + 0.14);
+}
+
+function playExplosion() {
+  if (!audioCtx) return;
+  const t   = audioCtx.currentTime;
+  const dur = 0.28;
+
+  // Ruido branco filtrado
+  const bufSize = Math.floor(audioCtx.sampleRate * dur);
+  const buf  = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buf;
+
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(2200, t);
+  filter.frequency.exponentialRampToValueAtTime(80, t + dur);
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(0.35, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+  noise.connect(filter);
+  filter.connect(noiseGain);
+  noiseGain.connect(audioCtx.destination);
+  noise.start(t);
+  noise.stop(t + dur);
+
+  // Grave descendente
+  const osc = audioCtx.createOscillator();
+  const og  = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(30, t + dur);
+  og.gain.setValueAtTime(0.5, t);
+  og.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(og);
+  og.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + dur);
+}
+
+function playLevelUp() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const freqs = [440, 550, 660, 880];
+  freqs.forEach((f, i) => {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(f, t + i * 0.08);
+    g.gain.setValueAtTime(0.15, t + i * 0.08);
+    g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.08 + 0.12);
+    osc.start(t + i * 0.08);
+    osc.stop(t + i * 0.08 + 0.12);
+  });
+}
+
+function playDie() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  for (let i = 0; i < 4; i++) {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.connect(g); g.connect(audioCtx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300 - i * 60, t + i * 0.1);
+    g.gain.setValueAtTime(0.25, t + i * 0.1);
+    g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.1 + 0.18);
+    osc.start(t + i * 0.1);
+    osc.stop(t + i * 0.1 + 0.18);
+  }
+}
+
+// =========================================================================
+// SECAO 4 - ENTRADA (Teclado e Toque)
+// =========================================================================
+const keys = {
+  left:  false,
+  right: false,
+  fire:  false,
+};
+
+window.addEventListener('keydown', e => {
+  switch(e.code) {
+    case 'ArrowLeft':  case 'KeyA': keys.left  = true; break;
+    case 'ArrowRight': case 'KeyD': keys.right = true; break;
+    case 'Space': keys.fire = true; e.preventDefault(); break;
+    case 'Enter': keys.fire = true; break;
+  }
+  initAudio();
+});
+window.addEventListener('keyup', e => {
+  switch(e.code) {
+    case 'ArrowLeft':  case 'KeyA': keys.left  = false; break;
+    case 'ArrowRight': case 'KeyD': keys.right = false; break;
+    case 'Space': keys.fire = false; break;
+    case 'Enter': keys.fire = false; break;
+  }
+});
+
+function setupMobileBtn(id, key) {
+  const el = document.getElementById(id);
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    keys[key] = true;
+    el.classList.add('pressed');
+    initAudio();
+  });
+  el.addEventListener('pointerup',    e => { e.preventDefault(); keys[key] = false; el.classList.remove('pressed'); });
+  el.addEventListener('pointerleave', e => { keys[key] = false; el.classList.remove('pressed'); });
+}
+
+function isMobileDevice() {
+  return window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+}
+
+// =========================================================================
+// SECAO 5 - ESTADO DO JOGO
+// =========================================================================
+let gs = { hiscore: 0 };
+
+function resetGame() {
+  const savedHi = gs.hiscore || 0;
+  gs = {
+    state:     'title',
+    score:     0,
+    hiscore:   savedHi,
+    lives:     PLAYER_LIVES_START,
+    level:     0,
+    energy:    ENERGY_MAX,
+
+    player: {
+      x:           W / 2 - 7,
+      y:           H - 22,
+      w:           SPRITES.player.pixels[0].length,
+      h:           SPRITES.player.pixels.length,
+      invincible:  0,
+      fireCooldown:0,
+    },
+
+    bullets:      [],
+    enemyBullets: [],
+    enemies:      [],
+    particles:    [],
+
+    gridVX:    ENEMY_SPEED_X_BASE,
+    gridX:     0,
+    gridY:     0,
+
+    stateTimer: 0,
+    flashTimer: 0,
+  };
+  spawnWave();
+}
+
+function spawnWave() {
+  const type = WAVE_TYPES[gs.level % WAVE_TYPES.length];
+  const sp   = SPRITES[type];
+  const sw   = sp.pixels[0].length;
+  const sh   = sp.pixels.length;
+
+  const totalW = ENEMY_COLS * ENEMY_CELL_W;
+  const startX = (W - totalW) / 2;
+
+  gs.enemies      = [];
+  gs.gridX        = 0;
+  gs.gridY        = ENEMY_GRID_TOP;
+  gs.gridVX       = ENEMY_SPEED_X_BASE + gs.level * 4;
+  gs.enemyBullets = [];
+
+  for (let row = 0; row < ENEMY_ROWS; row++) {
+    for (let col = 0; col < ENEMY_COLS; col++) {
+      gs.enemies.push({
+        col, row,
+        gx: startX + col * ENEMY_CELL_W + (ENEMY_CELL_W - sw) / 2,
+        gy: row * ENEMY_CELL_H + (ENEMY_CELL_H - sh) / 2,
+        w:  sw, h: sh,
+        type,
+        alive: true,
+        fireTimer: Math.random() * ENEMY_FIRE_INTERVAL,
+        diving:    false,
+        dvx: 0, dvy: 0,
+        diveX: 0, diveY: 0,
+      });
+    }
+  }
+}
+
+// =========================================================================
+// SECAO 6 - LOGICA DO JOGO
+// =========================================================================
+function update(dt) {
+  gs.stateTimer += dt;
+  gs.flashTimer  = Math.max(0, gs.flashTimer - dt);
+
+  if (gs.state === 'title')    { updateTitle(dt);   return; }
+  if (gs.state === 'gameover') { updateGameOver(dt); return; }
+  if (gs.state === 'dying')    { updateDying(dt);   return; }
+  if (gs.state === 'levelup')  { updateLevelUp(dt); return; }
+
+  // PLAYING
+  updatePlayer(dt);
+  updateBullets(dt);
+  updateEnemies(dt);
+  updateEnemyBullets(dt);
+  updateParticles(dt);
+  updateEnergy(dt);
+}
+
+function updateTitle(dt) {
+  updateParticles(dt);
+  if (gs.particles.length < 60) spawnStar();
+}
+
+function updateGameOver(dt) {
+  updateParticles(dt);
+  if (gs.stateTimer > 3.5) {
+    resetGame();
+  }
+}
+
+function updateDying(dt) {
+  updateParticles(dt);
+  if (gs.stateTimer > 2.2) {
+    if (gs.lives <= 0) {
+      gs.state      = 'gameover';
+      gs.stateTimer = 0;
+      if (gs.score > gs.hiscore) gs.hiscore = gs.score;
+    } else {
+      gs.player.x          = W / 2 - 7;
+      gs.player.invincible = 2.5;
+      gs.state             = 'playing';
+      gs.stateTimer        = 0;
+      gs.enemyBullets      = [];
+    }
+  }
+}
+
+function updateLevelUp(dt) {
+  updateParticles(dt);
+  if (gs.stateTimer > 2.5) {
+    gs.level++;
+    gs.energy     = ENERGY_MAX;
+    gs.state      = 'playing';
+    gs.stateTimer = 0;
+    spawnWave();
+  }
+}
+
+function updateEnergy(dt) {
+  gs.energy -= ENERGY_DRAIN_RATE * dt;
+  if (gs.energy <= 0) {
+    gs.energy = ENERGY_MAX;
+    killPlayer();
+  }
+}
+
+function updatePlayer(dt) {
+  const p = gs.player;
+  if (p.invincible > 0) p.invincible -= dt;
+
+  if (keys.left)  p.x -= PLAYER_SPEED * dt;
+  if (keys.right) p.x += PLAYER_SPEED * dt;
+
+  p.x = Math.max(0, Math.min(W - p.w, p.x));
+
+  p.fireCooldown -= dt;
+  if (keys.fire && p.fireCooldown <= 0) {
+    p.fireCooldown = PLAYER_FIRE_RATE;
+    gs.bullets.push({ x: p.x + p.w / 2 - 1, y: p.y - 6, w: 2, h: 6 });
+    playShoot();
+  }
+}
+
+function updateBullets(dt) {
+  for (const b of gs.bullets) b.y -= PLAYER_BULLET_SPEED * dt;
+  gs.bullets = gs.bullets.filter(b => b.y + b.h > 0);
+
+  for (let bi = gs.bullets.length - 1; bi >= 0; bi--) {
+    const b = gs.bullets[bi];
+    let hit = false;
+    for (const e of gs.enemies) {
+      if (!e.alive) continue;
+      const ex = e.diving ? e.diveX : gs.gridX + e.gx;
+      const ey = e.diving ? e.diveY : gs.gridY + e.gy;
+      if (rectsOverlap(b.x, b.y, b.w, b.h, ex, ey, e.w, e.h)) {
+        e.alive = false;
+        spawnExplosion(ex + e.w / 2, ey + e.h / 2, WAVE_PALETTES[e.type]);
+        playExplosion();
+        gs.score += SCORE_PER_ENEMY;
+        hit = true;
+        break;
+      }
+    }
+    if (hit) gs.bullets.splice(bi, 1);
+  }
+
+  // Verifica se onda foi eliminada
+  const anyAlive = gs.enemies.some(e => e.alive);
+  if (!anyAlive && gs.enemies.length > 0) {
+    gs.score     += SCORE_WAVE_BONUS;
+    gs.energy     = ENERGY_MAX;
+    gs.state      = 'levelup';
+    gs.stateTimer = 0;
+    playLevelUp();
+  }
+}
+
+function updateEnemies(dt) {
+  gs.gridX += gs.gridVX * dt;
+
+  let minGX = Infinity, maxGX = -Infinity;
+  for (const e of gs.enemies) {
+    if (!e.alive || e.diving) continue;
+    const ex = gs.gridX + e.gx;
+    minGX = Math.min(minGX, ex);
+    maxGX = Math.max(maxGX, ex + e.w);
+  }
+
+  if (minGX < Infinity) {
+    if (gs.gridVX > 0 && maxGX >= W) {
+      gs.gridVX = -Math.abs(gs.gridVX);
+      gs.gridY += ENEMY_SPEED_Y;
+    } else if (gs.gridVX < 0 && minGX <= 0) {
+      gs.gridVX = Math.abs(gs.gridVX);
+      gs.gridY += ENEMY_SPEED_Y;
+    }
+
+    const maxGY = gs.gridY + (ENEMY_ROWS - 1) * ENEMY_CELL_H + ENEMY_CELL_H;
+    if (maxGY >= gs.player.y - 2 && gs.player.invincible <= 0) {
+      killPlayer();
+      return;
+    }
+  }
+
+  for (const e of gs.enemies) {
+    if (!e.alive) continue;
+
+    if (e.diving) {
+      updateDive(e, dt);
+    } else {
+      e.fireTimer -= dt;
+      if (e.fireTimer <= 0) {
+        e.fireTimer = ENEMY_FIRE_INTERVAL + Math.random() * ENEMY_FIRE_INTERVAL;
+        const ex  = gs.gridX + e.gx + e.w / 2;
+        const ey  = gs.gridY + e.gy + e.h;
+        const ang = Math.atan2(gs.player.y - ey, gs.player.x + gs.player.w / 2 - ex);
+        gs.enemyBullets.push({
+          x:  ex - 1.5, y: ey,
+          vx: Math.cos(ang) * ENEMY_BULLET_SPEED * (0.5 + Math.random() * 0.5),
+          vy: Math.abs(Math.sin(ang)) * ENEMY_BULLET_SPEED * (0.6 + Math.random() * 0.4) + 20,
+        });
+      }
+
+      if (e.row === 0 && Math.random() < ENEMY_DIVE_CHANCE + gs.level * 0.0001) {
+        e.diving = true;
+        e.diveX  = gs.gridX + e.gx;
+        e.diveY  = gs.gridY + e.gy;
+        const ang = Math.atan2(gs.player.y - e.diveY, gs.player.x + gs.player.w / 2 - e.diveX);
+        e.dvx    = Math.cos(ang) * 95;
+        e.dvy    = Math.sin(ang) * 95 + 30;
+      }
+
+      const ex = gs.gridX + e.gx;
+      const ey = gs.gridY + e.gy;
+      checkEnemyPlayerCollision(e, ex, ey);
+    }
+
+    if (e.alive && e.diving) {
+      checkEnemyPlayerCollision(e, e.diveX, e.diveY);
+    }
+  }
+}
+
+function updateDive(e, dt) {
+  e.diveX += e.dvx * dt;
+  e.diveY += e.dvy * dt;
+  e.dvy   += 60 * dt;
+  if (e.diveY > H + 20 || e.diveX < -30 || e.diveX > W + 30) {
+    e.diving = false;
+    e.gy     = -e.h - 10;
+  }
+}
+
+function checkEnemyPlayerCollision(e, ex, ey) {
+  if (!e.alive) return;
+  if (gs.player.invincible > 0) return;
+  const p = gs.player;
+  if (rectsOverlap(ex, ey, e.w, e.h, p.x, p.y, p.w, p.h)) {
+    e.alive = false;
+    spawnExplosion(p.x + p.w / 2, p.y + p.h / 2, [PAL.cyan, PAL.white, PAL.yellow]);
+    playExplosion();
+    killPlayer();
+  }
+}
+
+function updateEnemyBullets(dt) {
+  for (const b of gs.enemyBullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+  }
+  gs.enemyBullets = gs.enemyBullets.filter(b =>
+    b.y < H + 10 && b.x > -10 && b.x < W + 10
+  );
+
+  if (gs.player.invincible > 0) return;
+  const p = gs.player;
+  for (let bi = gs.enemyBullets.length - 1; bi >= 0; bi--) {
+    const b = gs.enemyBullets[bi];
+    if (rectsOverlap(b.x, b.y, 3, 5, p.x, p.y, p.w, p.h)) {
+      gs.enemyBullets.splice(bi, 1);
+      spawnExplosion(p.x + p.w / 2, p.y + p.h / 2, [PAL.cyan, PAL.white, PAL.yellow]);
+      playExplosion();
+      killPlayer();
+      break;
+    }
+  }
+}
+
+function killPlayer() {
+  if (gs.player.invincible > 0) return;
+  gs.lives--;
+  gs.state      = 'dying';
+  gs.stateTimer = 0;
+  // Explodir partículas da nave
+  spawnExplosion(gs.player.x + gs.player.w / 2, gs.player.y + gs.player.h / 2,
+    [PAL.cyan, PAL.blue, PAL.white, PAL.yellow, PAL.orange]);
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => spawnExplosion(
+      gs.player.x + Math.random() * gs.player.w,
+      gs.player.y + Math.random() * gs.player.h,
+      [PAL.red, PAL.orange, PAL.yellow]
+    ), i * 120);
+  }
+  playDie();
+}
+
+function updateParticles(dt) {
+  for (const p of gs.particles) {
+    p.x    += p.vx * dt;
+    p.y    += p.vy * dt;
+    p.vy   += 60 * dt;
+    p.life -= dt;
+  }
+  gs.particles = gs.particles.filter(p => p.life > 0);
+}
+
+function spawnExplosion(cx, cy, palette) {
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    const ang   = Math.random() * Math.PI * 2;
+    const speed = 20 + Math.random() * 110;
+    gs.particles.push({
+      x: cx, y: cy,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed - 30,
+      life:    PARTICLE_LIFE * (0.5 + Math.random()),
+      maxLife: PARTICLE_LIFE,
+      color:   palette[Math.floor(Math.random() * palette.length)],
+      size:    1 + Math.random() * 2,
+    });
+  }
+}
+
+function spawnStar() {
+  gs.particles.push({
+    x: Math.random() * W,
+    y: -2,
+    vx: (Math.random() - 0.5) * 10,
+    vy: 15 + Math.random() * 45,
+    life:    4,
+    maxLife: 4,
+    color:   Math.random() < 0.3 ? PAL.cyan : PAL.white,
+    size:    Math.random() < 0.2 ? 2 : 1,
+  });
+}
+
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx &&
+         ay < by + bh && ay + ah > by;
+}
+
+// =========================================================================
+// SECAO 7 - RENDERIZACAO
+// =========================================================================
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+// Buffer logico 320x240
+const buf  = document.createElement('canvas');
+buf.width  = W;
+buf.height = H;
+const bctx = buf.getContext('2d');
+bctx.imageSmoothingEnabled = false;
+
+function getScale() {
+  const sx = Math.floor(canvas.width  / W);
+  const sy = Math.floor(canvas.height / H);
+  return Math.max(1, Math.min(sx, sy));
+}
+
+function render() {
+  bctx.fillStyle = '#000000';
+  bctx.fillRect(0, 0, W, H);
+
+  if (gs.state === 'title') {
+    renderTitle();
+  } else if (gs.state === 'gameover') {
+    renderGameOver();
+  } else {
+    renderHUD();
+    renderEnemies();
+    renderBullets();
+    renderEnemyBullets();
+    renderPlayer();
+    renderParticles();
+    if (gs.state === 'dying')   renderDyingOverlay();
+    if (gs.state === 'levelup') renderLevelUpOverlay();
+  }
+
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = getScale();
+  const ox    = Math.floor((canvas.width  - W * scale) / 2);
+  const oy    = Math.floor((canvas.height - H * scale) / 2);
+  ctx.drawImage(buf, ox, oy, W * scale, H * scale);
+}
+
+function bText(text, x, y, style, align) {
+  bctx.fillStyle  = style  || PAL.white;
+  bctx.textAlign  = align  || 'left';
+  bctx.fillText(text, x, y);
+}
+
+function renderHUD() {
+  // Pontuacao
+  bctx.font = '8px monospace';
+  bText('SCORE ' + String(gs.score).padStart(7,'0'), 2, 8, PAL.yellow, 'left');
+  bText('HI ' + String(gs.hiscore).padStart(7,'0'), W/2, 8, PAL.cyan, 'center');
+  bText('LVL ' + (gs.level + 1), W-2, 8, PAL.magenta, 'right');
+
+  // Vidas
+  for (let i = 0; i < gs.lives; i++) {
+    bctx.drawImage(SPC.heart, 2 + i * 11, 11);
+  }
+
+  // Barra de energia
+  const barW = 80, barH = 5, barX = W - barW - 2, barY = 11;
+  const pct  = Math.max(0, gs.energy / ENERGY_MAX);
+  bctx.fillStyle = '#222';
+  bctx.fillRect(barX, barY, barW, barH);
+  const eColor = pct > 0.5 ? PAL.green : pct > 0.25 ? PAL.yellow : PAL.red;
+  bctx.fillStyle = eColor;
+  bctx.fillRect(barX, barY, Math.round(barW * pct), barH);
+  bctx.strokeStyle = '#888';
+  bctx.lineWidth   = 1;
+  bctx.strokeRect(barX, barY, barW, barH);
+  bctx.font = '5px monospace';
+  bText('NRG', barX - 1, barY + 4, PAL.white, 'right');
+
+  // Separador
+  bctx.fillStyle = '#333';
+  bctx.fillRect(0, 20, W, 1);
+}
+
+function renderPlayer() {
+  if (gs.state === 'dying') return;
+  const p = gs.player;
+  if (p.invincible > 0 && Math.floor(p.invincible * 10) % 2 === 0) return;
+  bctx.drawImage(SPC.player, Math.round(p.x), Math.round(p.y));
+}
+
+function renderEnemies() {
+  for (const e of gs.enemies) {
+    if (!e.alive) continue;
+    const ex = e.diving ? e.diveX : gs.gridX + e.gx;
+    const ey = e.diving ? e.diveY : gs.gridY + e.gy;
+    bctx.drawImage(SPC[e.type], Math.round(ex), Math.round(ey));
+  }
+}
+
+function renderBullets() {
+  for (const b of gs.bullets)
+    bctx.drawImage(SPC.playerBullet, Math.round(b.x), Math.round(b.y));
+}
+
+function renderEnemyBullets() {
+  for (const b of gs.enemyBullets)
+    bctx.drawImage(SPC.enemyBullet, Math.round(b.x), Math.round(b.y));
+}
+
+function renderParticles() {
+  for (const p of gs.particles) {
+    bctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    bctx.fillStyle   = p.color;
+    bctx.fillRect(Math.round(p.x), Math.round(p.y), Math.ceil(p.size), Math.ceil(p.size));
+  }
+  bctx.globalAlpha = 1;
+}
+
+function renderTitle() {
+  renderParticles();
+
+  // Logo
+  bctx.font      = 'bold 20px monospace';
+  bctx.textAlign = 'center';
+  // sombra
+  bctx.fillStyle = '#440044';
+  bctx.fillText('MEGA MANIA', W/2 + 1, 65 + 1);
+  // texto
+  bctx.fillStyle = PAL.magenta;
+  bctx.fillText('MEGA MANIA', W/2, 65);
+
+  bctx.font      = '7px monospace';
+  bctx.fillStyle = PAL.cyan;
+  bctx.fillText('★  SPACE  SHOOTER  ★', W/2, 82);
+
+  // Piscante
+  if (Math.floor(Date.now() / 500) % 2 === 0) {
+    bctx.font      = '8px monospace';
+    bctx.fillStyle = PAL.yellow;
+    bctx.fillText('PRESSIONE ESPACO / TOQUE', W/2, 112);
+  }
+
+  bctx.font      = '6px monospace';
+  bctx.fillStyle = PAL.ltgray;
+  bctx.fillText('← → / A D  =  MOVER', W/2, 130);
+  bctx.fillText('ESPACO  =  ATIRAR', W/2, 139);
+
+  bctx.font      = '7px monospace';
+  bctx.fillStyle = PAL.orange;
+  bctx.fillText('HI-SCORE  ' + String(gs.hiscore).padStart(7,'0'), W/2, 158);
+
+  // Preview das ondas
+  bctx.font      = '5px monospace';
+  bctx.fillStyle = PAL.dkgray;
+  bctx.fillText('ENEMY TYPES:', W/2, 178);
+
+  const totalEW   = WAVE_TYPES.length * 48;
+  let   previewX  = (W - totalEW) / 2 + 4;
+  for (const type of WAVE_TYPES) {
+    const sp  = SPRITES[type];
+    const sw  = sp.pixels[0].length;
+    const sh  = sp.pixels.length;
+    bctx.drawImage(SPC[type], previewX + (14 - sw)/2, 185 + (14 - sh)/2);
+    bctx.font      = '5px monospace';
+    bctx.fillStyle = WAVE_PALETTES[type][0];
+    bctx.fillText(type.toUpperCase(), previewX + 7, 203);
+    previewX += 48;
+  }
+}
+
+function renderGameOver() {
+  renderParticles();
+  bctx.textAlign = 'center';
+
+  bctx.font      = 'bold 20px monospace';
+  bctx.fillStyle = '#440000';
+  bctx.fillText('GAME  OVER', W/2 + 1, H/2 - 18 + 1);
+  bctx.fillStyle = PAL.red;
+  bctx.fillText('GAME  OVER', W/2, H/2 - 18);
+
+  bctx.font      = '8px monospace';
+  bctx.fillStyle = PAL.yellow;
+  bctx.fillText('PONTUACAO: ' + String(gs.score).padStart(7,'0'), W/2, H/2 + 2);
+
+  if (gs.score >= gs.hiscore && gs.score > 0) {
+    if (Math.floor(Date.now() / 400) % 2 === 0) {
+      bctx.fillStyle = PAL.magenta;
+      bctx.fillText('NOVO RECORDE!', W/2, H/2 + 18);
+    }
+  }
+
+  bctx.font      = '6px monospace';
+  bctx.fillStyle = PAL.ltgray;
+  bctx.fillText('Voltando ao menu...', W/2, H/2 + 36);
+}
+
+function renderDyingOverlay() {
+  if (gs.stateTimer > 0.6) {
+    bctx.textAlign = 'center';
+    bctx.font      = 'bold 10px monospace';
+    bctx.fillStyle = PAL.red;
+    bctx.fillText('NAVE DESTRUIDA!', W/2, H/2 - 5);
+    bctx.font      = '7px monospace';
+    bctx.fillStyle = PAL.orange;
+    bctx.fillText('Vidas: ' + gs.lives, W/2, H/2 + 10);
+  }
+}
+
+function renderLevelUpOverlay() {
+  bctx.globalAlpha = 0.5;
+  bctx.fillStyle   = '#000';
+  bctx.fillRect(0, 0, W, H);
+  bctx.globalAlpha = 1;
+
+  renderParticles();
+
+  const pulse = 0.75 + 0.25 * Math.sin(gs.stateTimer * 8);
+  bctx.globalAlpha = pulse;
+  bctx.textAlign   = 'center';
+  bctx.font        = 'bold 14px monospace';
+  bctx.fillStyle   = PAL.lime;
+  bctx.fillText('ONDA DESTRUIDA!', W/2, H/2 - 24);
+  bctx.globalAlpha = 1;
+
+  bctx.font      = '8px monospace';
+  bctx.fillStyle = PAL.yellow;
+  bctx.fillText('+' + SCORE_WAVE_BONUS + ' BONUS', W/2, H/2 - 4);
+
+  const nextType = WAVE_TYPES[(gs.level + 1) % WAVE_TYPES.length];
+  bctx.fillStyle = PAL.cyan;
+  bctx.font      = '7px monospace';
+  bctx.fillText('PROXIMA ONDA: ' + nextType.toUpperCase(), W/2, H/2 + 14);
+
+  // Preview do proximo inimigo
+  const sp = SPRITES[nextType];
+  const sw = sp.pixels[0].length;
+  const sh = sp.pixels.length;
+  bctx.drawImage(SPC[nextType], W/2 - sw/2, H/2 + 22);
+}
+
+// =========================================================================
+// SECAO 8 - LOOP PRINCIPAL
+// =========================================================================
+let lastTime = null;
+
+function gameLoop(ts) {
+  if (lastTime === null) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+// =========================================================================
+// SECAO 9 - INICIALIZACAO E REDIMENSIONAMENTO
+// =========================================================================
+function resizeCanvas() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  ctx.imageSmoothingEnabled = false;
+
+  // Controles mobile
+  const mc    = document.getElementById('mobile-controls');
+  const scale = getScale();
+  if (isMobileDevice()) {
+    mc.style.display = 'block';
+    const scaledW = W * scale;
+    const scaledH = H * scale;
+    const offsetX = Math.floor((canvas.width  - scaledW) / 2);
+    const offsetY = Math.floor((canvas.height - scaledH) / 2);
+    mc.style.width  = scaledW + 'px';
+    mc.style.height = scaledH + 'px';
+    mc.style.left   = offsetX + 'px';
+    mc.style.top    = offsetY + 'px';
+    mc.style.bottom = 'auto';
+  }
+}
+
+// Touch direto no canvas (arrastar)
+let lastTouchX = null;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAudio();
+  if (gs.state === 'title') startGame();
+  lastTouchX = e.touches[0].clientX;
+  keys.fire  = true;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const cx = e.touches[0].clientX;
+  if (lastTouchX !== null) {
+    const dx = (cx - lastTouchX) / getScale();
+    if (gs.player) {
+      gs.player.x = Math.max(0, Math.min(W - gs.player.w, gs.player.x + dx));
+    }
+  }
+  lastTouchX = cx;
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  lastTouchX = null;
+  keys.fire  = false;
+});
+
+function startGame() {
+  initAudio();
+  const savedHi = gs.hiscore || 0;
+  resetGame();
+  gs.hiscore    = savedHi;
+  gs.state      = 'playing';
+  gs.stateTimer = 0;
+}
+
+canvas.addEventListener('click', () => {
+  if (gs.state === 'title') startGame();
+  initAudio();
+});
+
+window.addEventListener('keydown', e => {
+  if ((e.code === 'Space' || e.code === 'Enter') && gs.state === 'title') {
+    startGame();
+  }
+});
+
+setupMobileBtn('btn-left',  'left');
+setupMobileBtn('btn-right', 'right');
+setupMobileBtn('btn-fire',  'fire');
+
+document.getElementById('btn-fire').addEventListener('pointerdown', () => {
+  if (gs.state === 'title') startGame();
+});
+
+window.addEventListener('resize', resizeCanvas);
+
+// Kick-off
+initSpriteCache();
+resetGame();
+resizeCanvas();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
